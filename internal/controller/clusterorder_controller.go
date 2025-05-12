@@ -20,6 +20,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	hypershiftv1beta1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
 	corev1 "k8s.io/api/core/v1"
@@ -64,10 +65,11 @@ func (r *ClusterOrderReconciler) components() []component {
 // ClusterOrderReconciler reconciles a ClusterOrder object
 type ClusterOrderReconciler struct {
 	client.Client
-	Scheme                *runtime.Scheme
-	CreateClusterWebhook  string
-	DeleteClusterWebhook  string
-	ClusterOrderNamespace string
+	Scheme                 *runtime.Scheme
+	CreateClusterWebhook   string
+	DeleteClusterWebhook   string
+	ClusterOrderNamespace  string
+	MinimumRequestInterval time.Duration
 }
 
 func NewClusterOrderReconciler(
@@ -76,16 +78,20 @@ func NewClusterOrderReconciler(
 	createClusterWebhook string,
 	deleteClusterWebhook string,
 	clusterOrderNamespace string,
+	minimumRequestInterval time.Duration,
 ) *ClusterOrderReconciler {
+
 	if clusterOrderNamespace == "" {
 		clusterOrderNamespace = defaultClusterOrderNamespace
 	}
+
 	return &ClusterOrderReconciler{
-		Client:                client,
-		Scheme:                scheme,
-		CreateClusterWebhook:  createClusterWebhook,
-		DeleteClusterWebhook:  deleteClusterWebhook,
-		ClusterOrderNamespace: clusterOrderNamespace,
+		Client:                 client,
+		Scheme:                 scheme,
+		CreateClusterWebhook:   createClusterWebhook,
+		DeleteClusterWebhook:   deleteClusterWebhook,
+		ClusterOrderNamespace:  clusterOrderNamespace,
+		MinimumRequestInterval: minimumRequestInterval,
 	}
 }
 
@@ -256,9 +262,18 @@ func (r *ClusterOrderReconciler) handleUpdate(ctx context.Context, _ ctrl.Reques
 		val, exists := instance.Annotations[cloudkitManagementStateAnnotation]
 		if exists && val == "manual" {
 			log.Info(fmt.Sprintf("Not triggering create webhook for ClusterOrder %s because of annotation", instance.GetName()))
-		} else if err := triggerWebHook(ctx, url, instance); err != nil {
-			log.Error(err, fmt.Sprintf("Failed to trigger webhook %s: %v", url, err))
-			return ctrl.Result{Requeue: true}, nil
+		} else {
+			remainingTime, err := triggerWebHook(ctx, url, instance, r.MinimumRequestInterval)
+			if err != nil {
+				log.Error(err, fmt.Sprintf("Failed to trigger webhook %s: %v", url, err))
+				return ctrl.Result{Requeue: true}, nil
+			}
+
+			// Verify if we are within the minimum request window
+			if remainingTime != 0 {
+				log.Info(fmt.Sprintf("Request %s is within minimumRequestInterval", url))
+				return ctrl.Result{RequeueAfter: remainingTime}, nil
+			}
 		}
 	}
 
@@ -436,9 +451,16 @@ func (r *ClusterOrderReconciler) handleDelete(ctx context.Context, _ ctrl.Reques
 				val, exists := instance.Annotations[cloudkitManagementStateAnnotation]
 				if exists && val == "manual" {
 					log.Info(fmt.Sprintf("Not triggering delete webhook for ClusterOrder %s because of annotation", instance.GetName()))
-				} else if err := triggerWebHook(ctx, url, instance); err != nil {
-					log.Error(err, fmt.Sprintf("Failed to trigger webhook %s: %v", url, err))
-					return ctrl.Result{Requeue: true}, nil
+				} else {
+					remainingTime, err := triggerWebHook(ctx, url, instance, r.MinimumRequestInterval)
+					if err != nil {
+						log.Error(err, fmt.Sprintf("Failed to trigger webhook %s: %v", url, err))
+						return ctrl.Result{Requeue: true}, nil
+					}
+
+					if remainingTime != 0 {
+						return ctrl.Result{RequeueAfter: remainingTime}, nil
+					}
 				}
 			}
 			return ctrl.Result{}, err

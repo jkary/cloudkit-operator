@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -72,6 +73,7 @@ func main() {
 	var grpcInsecure bool
 	var grpcTokenFile string
 	var fulfillmentServerAddress string
+	var minimumRequestInterval string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -106,6 +108,12 @@ func main() {
 		"fulfillment-server-address",
 		os.Getenv("CLOUDKIT_FULFILLMENT_SERVER_ADDRESS"),
 		"Address of the fulfillment server.",
+	)
+	flag.StringVar(
+		&minimumRequestInterval,
+		"minimum-request-interval",
+		os.Getenv("CLOUDKIT_MINIMUM_REQUEST_INTERVAL"),
+		"Minimum amount of time between calls to the same webook url",
 	)
 	opts := zap.Options{
 		Development: true,
@@ -208,12 +216,24 @@ func main() {
 		setupLog.Info("gRPC connection to fulfillment service is disabled")
 	}
 
+	// No minimumRequestInterval means no rate limiting
+	if minimumRequestInterval == "" {
+		minimumRequestInterval = "0"
+	}
+
+	interval, err := time.ParseDuration(minimumRequestInterval)
+	if err != nil {
+		setupLog.Error(err, "Invalid minimum request interval.")
+		os.Exit(1)
+	}
+
 	if err = (controller.NewClusterOrderReconciler(
 		mgr.GetClient(),
 		mgr.GetScheme(),
 		os.Getenv("CLOUDKIT_CLUSTER_CREATE_WEBHOOK"),
 		os.Getenv("CLOUDKIT_CLUSTER_DELETE_WEBHOOK"),
 		os.Getenv("CLOUDKIT_CLUSTER_ORDER_NAMESPACE"),
+		interval,
 	)).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ClusterOrder")
 		os.Exit(1)
