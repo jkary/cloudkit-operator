@@ -13,8 +13,34 @@ import (
 	cloudkitv1alpha1 "github.com/innabox/cloudkit-operator/api/v1alpha1"
 )
 
+var instanceTracking map[string]time.Time
+
+const DefaultRequestInterval string = "5m"
+
 func triggerWebHook(ctx context.Context, url string, instance *cloudkitv1alpha1.ClusterOrder) error {
 	log := ctrllog.FromContext(ctx)
+
+	if lastUpdate, found := instanceTracking[url]; found {
+		duration, err := time.ParseDuration(instance.MinimumRequestInterval)
+		if err != nil {
+			instance.MinimumRequestInterval = ""
+		}
+
+		if instance.MinimumRequestInterval != "" {
+			log.Info("Invalid minimum request interval.  Setting it to the default.", "MinimumRequestInterval", DefaultRequestInterval, "")
+			duration, _ = time.ParseDuration(DefaultRequestInterval)
+		}
+
+		minInterval := int64(duration.Seconds())
+		delta := int64(time.Since(lastUpdate).Seconds())
+		if delta < minInterval {
+			log.Info("Tring to call webhook too soon.", "url", url, "minInterval", minInterval, "delta", int(delta), "lastUpdate", lastUpdate.String())
+			return fmt.Errorf("request inside the minimum request interval of %s", instance.MinimumRequestInterval)
+		}
+	} else {
+		instanceTracking[url] = time.Now()
+	}
+
 	log.Info("Triggering webhook " + url)
 
 	jsonData, err := json.Marshal(instance)

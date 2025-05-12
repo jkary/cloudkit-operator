@@ -123,8 +123,9 @@ type ClusterOrder struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   ClusterOrderSpec   `json:"spec,omitempty"`
-	Status ClusterOrderStatus `json:"status,omitempty"`
+	Spec                   ClusterOrderSpec   `json:"spec,omitempty"`
+	Status                 ClusterOrderStatus `json:"status,omitempty"`
+	MinimumRequestInterval string             `json:"minduration,omitempty"`
 }
 
 // +kubebuilder:object:root=true

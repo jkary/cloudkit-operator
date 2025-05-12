@@ -80,6 +80,7 @@ func NewClusterOrderReconciler(
 	if clusterOrderNamespace == "" {
 		clusterOrderNamespace = defaultClusterOrderNamespace
 	}
+
 	return &ClusterOrderReconciler{
 		Client:                client,
 		Scheme:                scheme,
