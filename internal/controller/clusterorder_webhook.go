@@ -13,32 +13,39 @@ import (
 	cloudkitv1alpha1 "github.com/innabox/cloudkit-operator/api/v1alpha1"
 )
 
-var instanceTracking map[string]time.Time
+var inflightRequests map[string]time.Time
 
 const DefaultRequestInterval string = "5m"
 
-func triggerWebHook(ctx context.Context, url string, instance *cloudkitv1alpha1.ClusterOrder) error {
+type ErrMinInterval struct {
+	RemainingTime string
+}
+
+func (e *ErrMinInterval) Error() string {
+	return fmt.Sprintf("request inside the minimum request interval of %v", string(e.RemainingTime))
+}
+
+func triggerWebHook(ctx context.Context, url string, instance *cloudkitv1alpha1.ClusterOrder, minimumRequestInterval string) error {
 	log := ctrllog.FromContext(ctx)
 
-	if lastUpdate, found := instanceTracking[url]; found {
-		duration, err := time.ParseDuration(instance.MinimumRequestInterval)
+	if inflightTime, found := inflightRequests[url]; found {
+		minDelta, err := time.ParseDuration(minimumRequestInterval)
 		if err != nil {
-			instance.MinimumRequestInterval = ""
-		}
-
-		if instance.MinimumRequestInterval != "" {
 			log.Info("Invalid minimum request interval.  Setting it to the default.", "MinimumRequestInterval", DefaultRequestInterval, "")
-			duration, _ = time.ParseDuration(DefaultRequestInterval)
+			minDelta, _ = time.ParseDuration(DefaultRequestInterval)
 		}
 
-		minInterval := int64(duration.Seconds())
-		delta := int64(time.Since(lastUpdate).Seconds())
-		if delta < minInterval {
-			log.Info("Tring to call webhook too soon.", "url", url, "minInterval", minInterval, "delta", int(delta), "lastUpdate", lastUpdate.String())
-			return fmt.Errorf("request inside the minimum request interval of %s", instance.MinimumRequestInterval)
+		delta := time.Since(inflightTime)
+		if delta < minDelta {
+			log.Info("Tring to call webhook too soon.", "url",
+				url, "minInterval", minimumRequestInterval, "delta",
+				delta, "inflightTime", inflightTime)
+			return &ErrMinInterval{
+				RemainingTime: string(delta),
+			}
 		}
-	} else {
-		instanceTracking[url] = time.Now()
+
+		delete(inflightRequests, url)
 	}
 
 	log.Info("Triggering webhook " + url)
@@ -67,5 +74,6 @@ func triggerWebHook(ctx context.Context, url string, instance *cloudkitv1alpha1.
 		return fmt.Errorf("received non-success status code: %d", resp.StatusCode)
 	}
 
+	inflightRequests[url] = time.Now()
 	return nil
 }
