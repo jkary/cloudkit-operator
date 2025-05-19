@@ -20,12 +20,11 @@ func triggerWebHook(ctx context.Context, url string, instance *cloudkitv1alpha1.
 	log := ctrllog.FromContext(ctx)
 	minDelta, _ := time.ParseDuration(minimumRequestInterval)
 
+	// Rate limiting by url.
 	if item, err := (*inflightRequests).Value(url); err != nil {
 		inflightTime := item.Data().(time.Time)
 		delta := time.Since(inflightTime)
-		if delta < minDelta {
-			return delta, fmt.Errorf("Tring to call webhook too soon. url: %s minInterval: %s", url, minimumRequestInterval)
-		}
+		return delta, nil
 	}
 
 	log.Info("Triggering webhook " + url)

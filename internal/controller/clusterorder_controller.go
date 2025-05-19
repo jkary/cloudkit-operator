@@ -77,19 +77,17 @@ func NewClusterOrderReconciler(
 	createClusterWebhook string,
 	deleteClusterWebhook string,
 	clusterOrderNamespace string,
-	minimumRequestInterval string,
 ) *ClusterOrderReconciler {
 	if clusterOrderNamespace == "" {
 		clusterOrderNamespace = defaultClusterOrderNamespace
 	}
 
 	return &ClusterOrderReconciler{
-		Client:                 client,
-		Scheme:                 scheme,
-		CreateClusterWebhook:   createClusterWebhook,
-		DeleteClusterWebhook:   deleteClusterWebhook,
-		ClusterOrderNamespace:  clusterOrderNamespace,
-		MinimumRequestInterval: minimumRequestInterval,
+		Client:                client,
+		Scheme:                scheme,
+		CreateClusterWebhook:  createClusterWebhook,
+		DeleteClusterWebhook:  deleteClusterWebhook,
+		ClusterOrderNamespace: clusterOrderNamespace,
 	}
 }
 
@@ -248,9 +246,15 @@ func (r *ClusterOrderReconciler) handleUpdate(ctx context.Context, _ ctrl.Reques
 	} else {
 		// only trigger webhook if the hostedcluster does not exist
 		if url := r.CreateClusterWebhook; url != "" {
-			if remainintTime, err := triggerWebHook(ctx, url, instance, r.MinimumRequestInterval); err != nil {
+			remainingTime, err := triggerWebHook(ctx, url, instance, r.MinimumRequestInterval)
+			if err != nil {
 				log.Error(err, fmt.Sprintf("Failed to trigger webhook %s: %v", url, err))
-				return ctrl.Result{RequeueAfter: remainintTime}, nil
+				return ctrl.Result{Requeue: true}, nil
+			}
+
+			// Verify if we are within the minimum request window
+			if remainingTime != 0 {
+				return ctrl.Result{RequeueAfter: remainingTime}, nil
 			}
 		}
 	}
@@ -315,8 +319,14 @@ func (r *ClusterOrderReconciler) handleDelete(ctx context.Context, _ ctrl.Reques
 	if hc, err := r.findHostedCluster(ctx, instance); hc != nil {
 		log.Info(fmt.Sprintf("Waiting for HostedCluster %s to delete", hc.GetName()))
 		if url := r.DeleteClusterWebhook; url != "" {
-			if remainingTime, err := triggerWebHook(ctx, url, instance, r.MinimumRequestInterval); err != nil {
+			remainingTime, err := triggerWebHook(ctx, url, instance, r.MinimumRequestInterval)
+			if err != nil {
 				log.Error(err, fmt.Sprintf("Failed to trigger webhook %s: %v", url, err))
+				return ctrl.Result{Requeue: true}, nil
+			}
+
+			// Verify if we are within the minimum request window
+			if remainingTime != 0 {
 				return ctrl.Result{RequeueAfter: remainingTime}, nil
 			}
 		}
