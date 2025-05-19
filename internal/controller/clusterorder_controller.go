@@ -248,9 +248,9 @@ func (r *ClusterOrderReconciler) handleUpdate(ctx context.Context, _ ctrl.Reques
 	} else {
 		// only trigger webhook if the hostedcluster does not exist
 		if url := r.CreateClusterWebhook; url != "" {
-			if err := triggerWebHook(ctx, url, instance, r.MinimumRequestInterval); err != nil {
+			if remainintTime, err := triggerWebHook(ctx, url, instance, r.MinimumRequestInterval); err != nil {
 				log.Error(err, fmt.Sprintf("Failed to trigger webhook %s: %v", url, err))
-				return ctrl.Result{Requeue: true}, nil
+				return ctrl.Result{RequeueAfter: remainintTime}, nil
 			}
 		}
 	}
@@ -315,9 +315,9 @@ func (r *ClusterOrderReconciler) handleDelete(ctx context.Context, _ ctrl.Reques
 	if hc, err := r.findHostedCluster(ctx, instance); hc != nil {
 		log.Info(fmt.Sprintf("Waiting for HostedCluster %s to delete", hc.GetName()))
 		if url := r.DeleteClusterWebhook; url != "" {
-			if err := triggerWebHook(ctx, url, instance, r.MinimumRequestInterval); err != nil {
+			if remainingTime, err := triggerWebHook(ctx, url, instance, r.MinimumRequestInterval); err != nil {
 				log.Error(err, fmt.Sprintf("Failed to trigger webhook %s: %v", url, err))
-				return ctrl.Result{Requeue: true}, nil
+				return ctrl.Result{RequeueAfter: remainingTime}, nil
 			}
 		}
 		return ctrl.Result{}, err
