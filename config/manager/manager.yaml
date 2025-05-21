@@ -63,12 +63,13 @@ spec:
         args:
           - --leader-elect
           - --health-probe-bind-address=:8081
+          - --grpc-insecure
         image: controller:latest
         imagePullPolicy: Always
         name: manager
         envFrom:
           - secretRef:
-              name: cloudkit-webhooks
+              name: cloudkit-config
               optional: true
         env:
           - name: CLOUDKIT_CLUSTER_ORDER_NAMESPACE

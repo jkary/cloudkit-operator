@@ -70,6 +70,7 @@ func NewFeedbackReconciler(logger logr.Logger, hubClient clnt.Client, grpcConn *
 // SetupWithManager adds the reconciler to the controller manager.
 func (r *FeedbackReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
+		Named("clusterorder-feedback").
 		For(&ckv1alpha1.ClusterOrder{}).
 		Complete(r)
 }
@@ -242,6 +243,10 @@ func (t *feedbackReconcilerTask) handleUpdate(ctx context.Context) (result ctrl.
 	if err != nil {
 		return
 	}
+	err = t.syncNodeRequests()
+	if err != nil {
+		return
+	}
 	return
 }
 
@@ -262,7 +267,7 @@ func (t *feedbackReconcilerTask) syncCondition(condition metav1.Condition) error
 	case ckv1alpha1.ClusterOrderConditionProgressing:
 		// TODO: There is no equivalent condition.
 	case ckv1alpha1.ClusterOrderConditionControlPlaneAvailable:
-		// TODO: There is no equivalent condition.
+		return t.syncConditionFulfilled(condition)
 	case ckv1alpha1.ClusterOrderConditionAvailable:
 		// TODO: There is no equivalent condition.
 	default:
@@ -270,6 +275,18 @@ func (t *feedbackReconcilerTask) syncCondition(condition metav1.Condition) error
 			"Unknown condition, will ignore it",
 			"condition", condition.Type,
 		)
+	}
+	return nil
+}
+
+func (t *feedbackReconcilerTask) syncConditionFulfilled(condition metav1.Condition) error {
+	orderCondition := t.findOrderCondition(ffv1.ClusterOrderConditionType_CLUSTER_ORDER_CONDITION_TYPE_FULFILLED)
+	oldStatus := orderCondition.GetStatus()
+	newStatus := t.mapConditionStatus(condition.Status)
+	orderCondition.SetStatus(newStatus)
+	orderCondition.SetMessage(condition.Message)
+	if newStatus != oldStatus {
+		orderCondition.SetLastTransitionTime(timestamppb.Now())
 	}
 	return nil
 }
@@ -364,8 +381,67 @@ func (t *feedbackReconcilerTask) syncPhaseReady(ctx context.Context) error {
 		publicClusterStatus.SetConsoleUrl(consoleURL)
 	}
 
-	// Save the hub identifier in the private cluster:
+	// Save the order and hub identifiers in the private cluster:
+	t.privateCluster.SetOrderId(t.publicOrder.GetId())
 	t.privateCluster.SetHubId(t.privateOrder.GetHubId())
+
+	return nil
+}
+
+func (t *feedbackReconcilerTask) syncNodeRequests() error {
+	for i := range len(t.object.Status.NodeRequests) {
+		err := t.syncNodeRequest(&t.object.Status.NodeRequests[i])
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (t *feedbackReconcilerTask) syncNodeRequest(nodeRequest *ckv1alpha1.NodeRequest) error {
+	// Find a matching node set in the spec of the cluster:
+	var nodeSetID string
+	for candidateNodeSetID, candidateNodeSet := range t.publicCluster.GetSpec().GetNodeSets() {
+		if candidateNodeSet.GetHostClass() == nodeRequest.ResourceClass {
+			nodeSetID = candidateNodeSetID
+			break
+		}
+	}
+	if nodeSetID == "" {
+		t.r.logger.Error(
+			nil,
+			"Failed to find a matching node set",
+			"resource_class", nodeRequest.ResourceClass,
+		)
+		return nil
+	}
+
+	// Find or create the matching node set in the status of the cluster:
+	nodeSets := t.publicCluster.GetStatus().GetNodeSets()
+	if nodeSets == nil {
+		nodeSets = map[string]*ffv1.ClusterNodeSet{}
+		t.publicCluster.GetStatus().SetNodeSets(nodeSets)
+	}
+	nodeSet := nodeSets[nodeSetID]
+	if nodeSet == nil {
+		nodeSet = ffv1.ClusterNodeSet_builder{
+			HostClass: nodeRequest.ResourceClass,
+		}.Build()
+		nodeSets[nodeSetID] = nodeSet
+	}
+
+	// Copy the number of nodes:
+	oldValue := nodeSet.GetSize()
+	newValue := int32(nodeRequest.NumberOfNodes)
+	if newValue != oldValue {
+		t.r.logger.Info(
+			"Updating node set size",
+			"resource_class", nodeRequest.ResourceClass,
+			"old_value", oldValue,
+			"new_value", newValue,
+		)
+		nodeSet.SetSize(newValue)
+	}
 
 	return nil
 }
@@ -436,7 +512,7 @@ func (t *feedbackReconcilerTask) calculateConsoleURL() string {
 		return ""
 	}
 	return fmt.Sprintf(
-		"https://console-openshift-console.%s.%s",
+		"https://console-openshift-console.apps.%s.%s",
 		t.hostedCluster.Name, t.hostedCluster.Spec.DNS.BaseDomain,
 	)
 }

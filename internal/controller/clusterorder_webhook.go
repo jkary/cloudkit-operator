@@ -5,10 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	cache "github.com/muesli/cache2go"
 	"net/http"
-	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 	"time"
+
+	cache "github.com/muesli/cache2go"
+	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
 
 	cloudkitv1alpha1 "github.com/innabox/cloudkit-operator/api/v1alpha1"
 )

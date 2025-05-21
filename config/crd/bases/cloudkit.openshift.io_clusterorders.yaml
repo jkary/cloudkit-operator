@@ -64,7 +64,7 @@ spec:
               templateID:
                 description: TemplateID is the unique identigier of the cluster template
                   to use when creating this cluster
-                pattern: ^[a-zA-Z_][a-zA-Z0-9_]*$
+                pattern: ^[a-zA-Z_][a-zA-Z0-9._]*$
                 type: string
               templateParameters:
                 description: |-
@@ -152,6 +152,24 @@ spec:
                   - reason
                   - status
                   - type
+                  type: object
+                type: array
+              nodeCounts:
+                description: NodeRequests reflects how many nodes are currently associated
+                  with the ClusterOrder
+                items:
+                  properties:
+                    numberOfNodes:
+                      description: NumberOfNodes describes the number of nodes you
+                        want of the given resource class
+                      type: integer
+                    resourceClass:
+                      description: ResourceClass describes the type of node you are
+                        requesting
+                      type: string
+                  required:
+                  - numberOfNodes
+                  - resourceClass
                   type: object
                 type: array
               phase:

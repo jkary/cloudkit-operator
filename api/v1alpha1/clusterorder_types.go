@@ -29,7 +29,7 @@ type ClusterOrderSpec struct {
 	// TemplateID is the unique identigier of the cluster template to use when creating this cluster
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Type=string
-	// +kubebuilder:validation:Pattern=^[a-zA-Z_][a-zA-Z0-9_]*$
+	// +kubebuilder:validation:Pattern=^[a-zA-Z_][a-zA-Z0-9._]*$
 	TemplateID string `json:"templateID,omitempty"`
 	// TemplateParameters is a JSON-encoded map of the parameter values for the
 	// selected cluster template.
@@ -112,6 +112,9 @@ type ClusterOrderStatus struct {
 	// Reference to the namespace that contains the HostedCluster resource
 	// +kubebuilder:validation:Optional
 	ClusterReference *ClusterOrderClusterReferenceType `json:"clusterReference,omitempty"`
+
+	// NodeRequests reflects how many nodes are currently associated with the ClusterOrder
+	NodeRequests []NodeRequest `json:"nodeCounts,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -134,6 +137,10 @@ type ClusterOrderList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []ClusterOrder `json:"items"`
+}
+
+func (co *ClusterOrder) SetPhase(phase ClusterOrderPhaseType) {
+	co.Status.Phase = phase
 }
 
 func init() {
