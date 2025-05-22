@@ -13,6 +13,7 @@ const (
 	ConditionClusterAvailable      = "ClusterAvailable"
 	ConditionProgressing           = "Progressing"
 	ConditionDeleting              = "Deleting"
+	ConditionCompleted             = "Completed"
 )
 
 const (

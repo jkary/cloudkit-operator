@@ -69,6 +69,9 @@ const (
 
 	// ClusterOrderPhaseReady means the cluster and all associated resources are ready
 	ClusterOrderPhaseReady ClusterOrderPhaseType = "Ready"
+
+	// ClusterOrderPhaseCompleted means the cluster is completely ready for use
+	ClusterOrderPhaseCompleted ClusterOrderPhaseType = "Completed"
 )
 
 // ClusterOrderConditionType is a valid value for .status.conditions.type

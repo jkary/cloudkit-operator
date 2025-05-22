@@ -256,6 +256,11 @@ func (r *ClusterOrderReconciler) handleHostedCluster(ctx context.Context, instan
 		instance.SetPhase(v1alpha1.ClusterOrderPhaseReady)
 	}
 
+	if hostedClusterIsReady(hc) {
+		instance.SetStatusCondition(string(v1alpha1.ClusterOrderPhaseCompleted), metav1.ConditionTrue, "", v1alpha1.ReasonAsExpected)
+		instance.SetPhase(v1alpha1.ClusterOrderPhaseCompleted)
+	}
+
 	// Fetch the node pools and handle them:
 	nodePools := &hypershiftv1beta1.NodePoolList{}
 	err := r.Client.List(
@@ -349,6 +354,11 @@ func (r *ClusterOrderReconciler) handleNoHostedCluster(ctx context.Context,
 		}
 	}
 	return ctrl.Result{}, nil
+}
+
+func hostedClusterIsReady(hc *hypershiftv1beta1.HostedCluster) bool {
+	return (meta.IsStatusConditionTrue(hc.Status.Conditions, "ClusterVersionSucceeding") &&
+		meta.IsStatusConditionFalse(hc.Status.Conditions, "Degraded"))
 }
 
 func controlPlaneIsAvailable(hc *hypershiftv1beta1.HostedCluster) bool {
