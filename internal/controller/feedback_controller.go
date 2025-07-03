@@ -28,44 +28,34 @@ import (
 	clnt "sigs.k8s.io/controller-runtime/pkg/client"
 
 	ckv1alpha1 "github.com/innabox/cloudkit-operator/api/v1alpha1"
-	ffv1 "github.com/innabox/cloudkit-operator/internal/api/fulfillment/v1"
 	privatev1 "github.com/innabox/cloudkit-operator/internal/api/private/v1"
 	sharedv1 "github.com/innabox/cloudkit-operator/internal/api/shared/v1"
 )
 
 // FeedbackReconciler sends updates to the fulfillment service.
 type FeedbackReconciler struct {
-	logger                logr.Logger
-	hubClient             clnt.Client
-	publicOrdersClient    ffv1.ClusterOrdersClient
-	privateOrdersClient   privatev1.ClusterOrdersClient
-	publicClustersClient  ffv1.ClustersClient
-	privateClustersClient privatev1.ClustersClient
-	publicTemplatesClient ffv1.ClusterTemplatesClient
+	logger          logr.Logger
+	hubClient       clnt.Client
+	clustersClient  privatev1.ClustersClient
+	templatesClient privatev1.ClusterTemplatesClient
 }
 
 // feedbackReconcilerTask contains data that is used for the reconciliation of a specific cluster order, so there is less
 // need to pass around as function parameters that and other related objects.
 type feedbackReconcilerTask struct {
-	r              *FeedbackReconciler
-	object         *ckv1alpha1.ClusterOrder
-	publicOrder    *ffv1.ClusterOrder
-	privateOrder   *privatev1.ClusterOrder
-	publicCluster  *ffv1.Cluster
-	privateCluster *privatev1.Cluster
-	hostedCluster  *hypershiftv1beta1.HostedCluster
+	r             *FeedbackReconciler
+	object        *ckv1alpha1.ClusterOrder
+	cluster       *privatev1.Cluster
+	hostedCluster *hypershiftv1beta1.HostedCluster
 }
 
 // NewFeedbackReconciler creates a reconciler that sends to the fulfillment service updates about cluster orders.
 func NewFeedbackReconciler(logger logr.Logger, hubClient clnt.Client, grpcConn *grpc.ClientConn) *FeedbackReconciler {
 	return &FeedbackReconciler{
-		logger:                logger,
-		hubClient:             hubClient,
-		publicOrdersClient:    ffv1.NewClusterOrdersClient(grpcConn),
-		privateOrdersClient:   privatev1.NewClusterOrdersClient(grpcConn),
-		publicClustersClient:  ffv1.NewClustersClient(grpcConn),
-		privateClustersClient: privatev1.NewClustersClient(grpcConn),
-		publicTemplatesClient: ffv1.NewClusterTemplatesClient(grpcConn),
+		logger:          logger,
+		hubClient:       hubClient,
+		clustersClient:  privatev1.NewClustersClient(grpcConn),
+		templatesClient: privatev1.NewClusterTemplatesClient(grpcConn),
 	}
 }
 
@@ -87,41 +77,29 @@ func (r *FeedbackReconciler) Reconcile(ctx context.Context, request ctrl.Request
 		return //nolint:nakedret
 	}
 
-	// Get the identifier of the order from the labels. If this isn't present it means that the object wasn't
+	// Get the identifier of the cluster from the labels. If this isn't present it means that the object wasn't
 	// created by the fulfillment service, so we ignore it.
-	orderID, ok := object.Labels[cloudkitClusterOrderIDLabel]
+	clusterID, ok := object.Labels[cloudkitClusterOrderIDLabel]
 	if !ok {
 		r.logger.Info(
-			"There is no label containing the order identifier, will ignore it",
+			"There is no label containing the cluster identifier, will ignore it",
 			"label", cloudkitClusterOrderIDLabel,
 		)
 		return
 	}
 
-	// Fetch all the relevant objects:
-	publicOrder, privateOrder, err := r.fetchOrder(ctx, orderID)
+	// Fetch the cluster:
+	cluster, err := r.fetchCluster(ctx, clusterID)
 	if err != nil {
 		return
-	}
-	var publicCluster *ffv1.Cluster
-	var privateCluster *privatev1.Cluster
-	clusterID := publicOrder.GetStatus().GetClusterId()
-	if clusterID != "" {
-		publicCluster, privateCluster, err = r.fetchCluster(ctx, clusterID)
-		if err != nil {
-			return
-		}
 	}
 
 	// Create a task to do the rest of the job, but using copies of the objects, so that we can later compare the
 	// before and after values and save only the objects that have changed.
 	t := &feedbackReconcilerTask{
-		r:              r,
-		object:         object,
-		publicOrder:    clone(publicOrder),
-		privateOrder:   clone(privateOrder),
-		publicCluster:  clone(publicCluster),
-		privateCluster: clone(privateCluster),
+		r:       r,
+		object:  object,
+		cluster: clone(cluster),
 	}
 	if object.ObjectMeta.DeletionTimestamp.IsZero() {
 		result, err = t.handleUpdate(ctx)
@@ -133,101 +111,34 @@ func (r *FeedbackReconciler) Reconcile(ctx context.Context, request ctrl.Request
 	}
 
 	// Save the objects that have changed:
-	err = r.saveCluster(ctx, publicCluster, t.publicCluster, privateCluster, t.privateCluster)
-	if err != nil {
-		return
-	}
-	err = r.saveOrder(ctx, publicOrder, t.publicOrder, privateOrder, t.privateOrder)
+	err = r.saveCluster(ctx, cluster, t.cluster)
 	if err != nil {
 		return
 	}
 	return
 }
 
-func (r *FeedbackReconciler) fetchOrder(ctx context.Context, id string) (public *ffv1.ClusterOrder,
-	private *privatev1.ClusterOrder, err error) {
-	publicResponse, err := r.publicOrdersClient.Get(ctx, ffv1.ClusterOrdersGetRequest_builder{
+func (r *FeedbackReconciler) fetchCluster(ctx context.Context, id string) (cluster *privatev1.Cluster, err error) {
+	response, err := r.clustersClient.Get(ctx, privatev1.ClustersGetRequest_builder{
 		Id: id,
 	}.Build())
 	if err != nil {
 		return
 	}
-	privateResponse, err := r.privateOrdersClient.Get(ctx, privatev1.ClusterOrdersGetRequest_builder{
-		Id: id,
-	}.Build())
-	if err != nil {
-		return
+	cluster = response.GetObject()
+	if !cluster.HasSpec() {
+		cluster.SetSpec(&privatev1.ClusterSpec{})
 	}
-	public = publicResponse.GetObject()
-	if !public.HasSpec() {
-		public.SetSpec(&ffv1.ClusterOrderSpec{})
+	if !cluster.HasStatus() {
+		cluster.SetStatus(&privatev1.ClusterStatus{})
 	}
-	if !public.HasStatus() {
-		public.SetStatus(&ffv1.ClusterOrderStatus{})
-	}
-	private = privateResponse.GetObject()
 	return
 }
 
-func (r *FeedbackReconciler) fetchCluster(ctx context.Context, id string) (public *ffv1.Cluster,
-	private *privatev1.Cluster, err error) {
-	publicResponse, err := r.publicClustersClient.Get(ctx, ffv1.ClustersGetRequest_builder{
-		Id: id,
-	}.Build())
-	if err != nil {
-		return
-	}
-	privateResponse, err := r.privateClustersClient.Get(ctx, privatev1.ClustersGetRequest_builder{
-		Id: id,
-	}.Build())
-	if err != nil {
-		return
-	}
-	public = publicResponse.GetObject()
-	if !public.HasSpec() {
-		public.SetSpec(&ffv1.ClusterSpec{})
-	}
-	if !public.HasStatus() {
-		public.SetStatus(&ffv1.ClusterStatus{})
-	}
-	private = privateResponse.GetObject()
-	return
-}
-
-func (r *FeedbackReconciler) saveOrder(ctx context.Context, publicBefore, publicAfter *ffv1.ClusterOrder,
-	privateBefore, privateAfter *privatev1.ClusterOrder) error {
-	if !equal(publicAfter, publicBefore) {
-		_, err := r.publicOrdersClient.Update(ctx, ffv1.ClusterOrdersUpdateRequest_builder{
-			Object: publicAfter,
-		}.Build())
-		if err != nil {
-			return err
-		}
-	}
-	if !equal(privateAfter, privateBefore) {
-		_, err := r.privateOrdersClient.Update(ctx, privatev1.ClusterOrdersUpdateRequest_builder{
-			Object: privateAfter,
-		}.Build())
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (r *FeedbackReconciler) saveCluster(ctx context.Context, publicBefore, publicAfter *ffv1.Cluster,
-	privateBefore, privateAfter *privatev1.Cluster) error {
-	if !equal(publicAfter, publicBefore) {
-		_, err := r.publicClustersClient.Update(ctx, ffv1.ClustersUpdateRequest_builder{
-			Object: publicAfter,
-		}.Build())
-		if err != nil {
-			return err
-		}
-	}
-	if !equal(privateAfter, privateBefore) {
-		_, err := r.privateClustersClient.Update(ctx, privatev1.ClustersUpdateRequest_builder{
-			Object: privateAfter,
+func (r *FeedbackReconciler) saveCluster(ctx context.Context, before, after *privatev1.Cluster) error {
+	if !equal(after, before) {
+		_, err := r.clustersClient.Update(ctx, privatev1.ClustersUpdateRequest_builder{
+			Object: after,
 		}.Build())
 		if err != nil {
 			return err
@@ -267,11 +178,11 @@ func (t *feedbackReconcilerTask) syncCondition(condition metav1.Condition) error
 	case ckv1alpha1.ClusterOrderConditionAccepted:
 		return t.syncConditionAccepted(condition)
 	case ckv1alpha1.ClusterOrderConditionProgressing:
-		// TODO: There is no equivalent condition.
+		return t.syncConditionProgressing(condition)
 	case ckv1alpha1.ClusterOrderConditionControlPlaneAvailable:
-		return t.syncConditionFulfilled(condition)
+		return t.syncConditionControlPlaneAvailable(condition)
 	case ckv1alpha1.ClusterOrderConditionAvailable:
-		// TODO: There is no equivalent condition.
+		return t.syncConditionAvailable(condition)
 	default:
 		t.r.logger.Info(
 			"Unknown condition, will ignore it",
@@ -281,8 +192,8 @@ func (t *feedbackReconcilerTask) syncCondition(condition metav1.Condition) error
 	return nil
 }
 
-func (t *feedbackReconcilerTask) syncConditionFulfilled(condition metav1.Condition) error {
-	orderCondition := t.findOrderCondition(ffv1.ClusterOrderConditionType_CLUSTER_ORDER_CONDITION_TYPE_FULFILLED)
+func (t *feedbackReconcilerTask) syncConditionAccepted(condition metav1.Condition) error {
+	orderCondition := t.findClusterCondition(privatev1.ClusterConditionType_CLUSTER_CONDITION_TYPE_PROGRESSING)
 	oldStatus := orderCondition.GetStatus()
 	newStatus := t.mapConditionStatus(condition.Status)
 	orderCondition.SetStatus(newStatus)
@@ -293,14 +204,38 @@ func (t *feedbackReconcilerTask) syncConditionFulfilled(condition metav1.Conditi
 	return nil
 }
 
-func (t *feedbackReconcilerTask) syncConditionAccepted(condition metav1.Condition) error {
-	orderCondition := t.findOrderCondition(ffv1.ClusterOrderConditionType_CLUSTER_ORDER_CONDITION_TYPE_ACCEPTED)
+func (t *feedbackReconcilerTask) syncConditionProgressing(condition metav1.Condition) error {
+	orderCondition := t.findClusterCondition(privatev1.ClusterConditionType_CLUSTER_CONDITION_TYPE_PROGRESSING)
 	oldStatus := orderCondition.GetStatus()
 	newStatus := t.mapConditionStatus(condition.Status)
 	orderCondition.SetStatus(newStatus)
 	orderCondition.SetMessage(condition.Message)
 	if newStatus != oldStatus {
 		orderCondition.SetLastTransitionTime(timestamppb.Now())
+	}
+	return nil
+}
+
+func (t *feedbackReconcilerTask) syncConditionControlPlaneAvailable(condition metav1.Condition) error {
+	orderCondition := t.findClusterCondition(privatev1.ClusterConditionType_CLUSTER_CONDITION_TYPE_PROGRESSING)
+	oldStatus := orderCondition.GetStatus()
+	newStatus := t.mapConditionStatus(condition.Status)
+	orderCondition.SetStatus(newStatus)
+	orderCondition.SetMessage(condition.Message)
+	if newStatus != oldStatus {
+		orderCondition.SetLastTransitionTime(timestamppb.Now())
+	}
+	return nil
+}
+
+func (t *feedbackReconcilerTask) syncConditionAvailable(condition metav1.Condition) error {
+	clusterCondition := t.findClusterCondition(privatev1.ClusterConditionType_CLUSTER_CONDITION_TYPE_PROGRESSING)
+	oldStatus := clusterCondition.GetStatus()
+	newStatus := t.mapConditionStatus(condition.Status)
+	clusterCondition.SetStatus(newStatus)
+	clusterCondition.SetMessage(condition.Message)
+	if newStatus != oldStatus {
+		clusterCondition.SetLastTransitionTime(timestamppb.Now())
 	}
 	return nil
 }
@@ -338,33 +273,19 @@ func (t *feedbackReconcilerTask) syncPhase(ctx context.Context) error {
 }
 
 func (t *feedbackReconcilerTask) syncPhaseProgressing() error {
-	t.publicOrder.GetStatus().SetState(ffv1.ClusterOrderState_CLUSTER_ORDER_STATE_PROGRESSING)
+	t.cluster.GetStatus().SetState(privatev1.ClusterState_CLUSTER_STATE_PROGRESSING)
 	return nil
 }
 
 func (t *feedbackReconcilerTask) syncPhaseFailed() error {
-	t.publicOrder.GetStatus().SetState(ffv1.ClusterOrderState_CLUSTER_ORDER_STATE_FAILED)
+	t.cluster.GetStatus().SetState(privatev1.ClusterState_CLUSTER_STATE_FAILED)
 	return nil
 }
 
 func (t *feedbackReconcilerTask) syncPhaseReady(ctx context.Context) error {
-	// If the order doesn't a have a reference to the cluster yet, then we need to create the new cluster, otherwise
-	// the details will have been already fetched.
-	publicOrderStatus := t.publicOrder.GetStatus()
-	if publicOrderStatus.GetClusterId() == "" {
-		err := t.createCluster(ctx)
-		if err != nil {
-			return err
-		}
-	}
-
-	// Set the status of the order:
-	publicOrderStatus.SetState(ffv1.ClusterOrderState_CLUSTER_ORDER_STATE_FULFILLED)
-	publicOrderStatus.SetClusterId(t.publicCluster.GetId())
-
 	// Set the status of the cluster:
-	publicClusterStatus := t.publicCluster.GetStatus()
-	publicClusterStatus.SetState(ffv1.ClusterState_CLUSTER_STATE_READY)
+	clusterStatus := t.cluster.GetStatus()
+	clusterStatus.SetState(privatev1.ClusterState_CLUSTER_STATE_READY)
 
 	// In order to get the API and console URL we need to fetch the hosted cluster:
 	err := t.fetchHostedCluster(ctx)
@@ -373,16 +294,12 @@ func (t *feedbackReconcilerTask) syncPhaseReady(ctx context.Context) error {
 	}
 	apiURL := t.calculateAPIURL()
 	if apiURL != "" {
-		publicClusterStatus.SetApiUrl(apiURL)
+		clusterStatus.SetApiUrl(apiURL)
 	}
 	consoleURL := t.calculateConsoleURL()
 	if consoleURL != "" {
-		publicClusterStatus.SetConsoleUrl(consoleURL)
+		clusterStatus.SetConsoleUrl(consoleURL)
 	}
-
-	// Save the order and hub identifiers in the private cluster:
-	t.privateCluster.SetOrderId(t.publicOrder.GetId())
-	t.privateCluster.SetHubId(t.privateOrder.GetHubId())
 
 	return nil
 }
@@ -400,7 +317,7 @@ func (t *feedbackReconcilerTask) syncNodeRequests() error {
 func (t *feedbackReconcilerTask) syncNodeRequest(nodeRequest *ckv1alpha1.NodeRequest) error {
 	// Find a matching node set in the spec of the cluster:
 	var nodeSetID string
-	for candidateNodeSetID, candidateNodeSet := range t.publicCluster.GetSpec().GetNodeSets() {
+	for candidateNodeSetID, candidateNodeSet := range t.cluster.GetSpec().GetNodeSets() {
 		if candidateNodeSet.GetHostClass() == nodeRequest.ResourceClass {
 			nodeSetID = candidateNodeSetID
 			break
@@ -416,14 +333,14 @@ func (t *feedbackReconcilerTask) syncNodeRequest(nodeRequest *ckv1alpha1.NodeReq
 	}
 
 	// Find or create the matching node set in the status of the cluster:
-	nodeSets := t.publicCluster.GetStatus().GetNodeSets()
+	nodeSets := t.cluster.GetStatus().GetNodeSets()
 	if nodeSets == nil {
-		nodeSets = map[string]*ffv1.ClusterNodeSet{}
-		t.publicCluster.GetStatus().SetNodeSets(nodeSets)
+		nodeSets = map[string]*privatev1.ClusterNodeSet{}
+		t.cluster.GetStatus().SetNodeSets(nodeSets)
 	}
 	nodeSet := nodeSets[nodeSetID]
 	if nodeSet == nil {
-		nodeSet = ffv1.ClusterNodeSet_builder{
+		nodeSet = privatev1.ClusterNodeSet_builder{
 			HostClass: nodeRequest.ResourceClass,
 		}.Build()
 		nodeSets[nodeSetID] = nodeSet
@@ -443,76 +360,6 @@ func (t *feedbackReconcilerTask) syncNodeRequest(nodeRequest *ckv1alpha1.NodeReq
 	}
 
 	return nil
-}
-
-func (t *feedbackReconcilerTask) createCluster(ctx context.Context) error {
-	// Prepare the cluster:
-	publicCluster := ffv1.Cluster_builder{
-		Spec:   ffv1.ClusterSpec_builder{}.Build(),
-		Status: ffv1.ClusterStatus_builder{}.Build(),
-	}.Build()
-
-	// Copy the initial node sets from the template:
-	getTemplateResponse, err := t.r.publicTemplatesClient.Get(ctx, ffv1.ClusterTemplatesGetRequest_builder{
-		Id: t.publicOrder.GetSpec().GetTemplateId(),
-	}.Build())
-	if err != nil {
-		return err
-	}
-	template := getTemplateResponse.GetObject()
-	clusterNodeSets, err := t.prepareNodeSets(ctx, template)
-	if err != nil {
-		return err
-	}
-	publicCluster.GetSpec().SetNodeSets(clusterNodeSets)
-
-	// Create the cluster:
-	getPublicClusterResponse, err := t.r.publicClustersClient.Create(ctx, ffv1.ClustersCreateRequest_builder{
-		Object: publicCluster,
-	}.Build())
-	if err != nil {
-		return err
-	}
-	publicCluster = getPublicClusterResponse.GetObject()
-
-	// The private cluster will be created automatically by the server, so we only need to fetch it:
-	getPrivateClusterResponse, err := t.r.privateClustersClient.Get(ctx, privatev1.ClustersGetRequest_builder{
-		Id: publicCluster.GetId(),
-	}.Build())
-	if err != nil {
-		return err
-	}
-	privateCluster := getPrivateClusterResponse.GetObject()
-
-	// Save the results:
-	t.publicCluster = publicCluster
-	t.privateCluster = privateCluster
-
-	return nil
-}
-
-func (t *feedbackReconcilerTask) prepareNodeSets(ctx context.Context,
-	template *ffv1.ClusterTemplate) (result map[string]*ffv1.ClusterNodeSet, err error) {
-	clusterNodeSets := map[string]*ffv1.ClusterNodeSet{}
-	for nodeSetKey, templateNodeSet := range template.GetNodeSets() {
-		var clusterNodeSet *ffv1.ClusterNodeSet
-		clusterNodeSet, err = t.prepareNodeSet(ctx, templateNodeSet)
-		if err != nil {
-			return
-		}
-		clusterNodeSets[nodeSetKey] = clusterNodeSet
-	}
-	result = clusterNodeSets
-	return
-}
-
-func (t *feedbackReconcilerTask) prepareNodeSet(ctx context.Context,
-	templateNodeSet *ffv1.ClusterTemplateNodeSet) (result *ffv1.ClusterNodeSet, err error) {
-	result = ffv1.ClusterNodeSet_builder{
-		HostClass: templateNodeSet.GetHostClass(),
-		Size:      templateNodeSet.GetSize(),
-	}.Build()
-	return
 }
 
 func (t *feedbackReconcilerTask) fetchHostedCluster(ctx context.Context) error {
@@ -562,20 +409,20 @@ func (t *feedbackReconcilerTask) handleDelete(ctx context.Context) (result ctrl.
 	return
 }
 
-func (t *feedbackReconcilerTask) findOrderCondition(kind ffv1.ClusterOrderConditionType) *ffv1.ClusterOrderCondition {
-	var condition *ffv1.ClusterOrderCondition
-	for _, current := range t.publicOrder.Status.Conditions {
+func (t *feedbackReconcilerTask) findClusterCondition(kind privatev1.ClusterConditionType) *privatev1.ClusterCondition {
+	var condition *privatev1.ClusterCondition
+	for _, current := range t.cluster.Status.Conditions {
 		if current.Type == kind {
 			condition = current
 			break
 		}
 	}
 	if condition == nil {
-		condition = &ffv1.ClusterOrderCondition{
+		condition = &privatev1.ClusterCondition{
 			Type:   kind,
 			Status: sharedv1.ConditionStatus_CONDITION_STATUS_FALSE,
 		}
-		t.publicOrder.Status.Conditions = append(t.publicOrder.Status.Conditions, condition)
+		t.cluster.Status.Conditions = append(t.cluster.Status.Conditions, condition)
 	}
 	return condition
 }
