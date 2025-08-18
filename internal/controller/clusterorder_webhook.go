@@ -26,6 +26,7 @@ var (
 func checkForExistingRequest(ctx context.Context, url string, minimumRequestInterval time.Duration) time.Duration {
 	var delta time.Duration
 
+	log := ctrllog.FromContext(ctx)
 	inflightRequestsLock.RLock()
 	request, ok := inflightRequests[url]
 	if ok {
@@ -33,6 +34,7 @@ func checkForExistingRequest(ctx context.Context, url string, minimumRequestInte
 		if delta >= minimumRequestInterval {
 			delta = 0
 		}
+		log.Info("skip webhook (url found in cache)", "url", url, "delta", delta, "minimumRequestInterval", minimumRequestInterval)
 	}
 	inflightRequestsLock.RUnlock()
 	purgeExpiredRequests(ctx, minimumRequestInterval)
@@ -45,7 +47,7 @@ func addInflightRequest(ctx context.Context, url string, minimumRequestInterval 
 	inflightRequests[url] = InflightRequest{
 		createTime: time.Now(),
 	}
-	log.Info("added url to cache", "url", url)
+	log.Info("add webhook to cache", "url", url)
 	inflightRequestsLock.Unlock()
 	purgeExpiredRequests(ctx, minimumRequestInterval)
 }
@@ -57,7 +59,6 @@ func purgeExpiredRequests(ctx context.Context, minimumRequestInterval time.Durat
 	inflightRequestsLock.RLock()
 	for url, request := range inflightRequests {
 		if delta := time.Since(request.createTime); delta > minimumRequestInterval {
-			log.Info("found url in cache", "url", url, "delta", delta)
 			expiredRequests = append(expiredRequests, url)
 		}
 	}
@@ -66,7 +67,7 @@ func purgeExpiredRequests(ctx context.Context, minimumRequestInterval time.Durat
 	if len(expiredRequests) > 0 {
 		inflightRequestsLock.Lock()
 		for _, url := range expiredRequests {
-			log.Info("removing url from cache", "url", url)
+			log.Info("expire cache entry for webhook", "url", url, "minimumRequestInterval", minimumRequestInterval)
 			delete(inflightRequests, url)
 		}
 		inflightRequestsLock.Unlock()
@@ -81,7 +82,7 @@ func triggerWebHook(ctx context.Context, url string, instance *cloudkitv1alpha1.
 		return delta, nil
 	}
 
-	log.Info("triggering webhook", "url", url)
+	log.Info("trigger webhook", "url", url)
 
 	jsonData, err := json.Marshal(instance)
 	if err != nil {
