@@ -20,6 +20,7 @@ rules:
 - apiGroups:
   - cloudkit.openshift.io
   resources:
+  - cloudkitvms
   - clusterorders
   verbs:
   - create
@@ -32,17 +33,31 @@ rules:
 - apiGroups:
   - cloudkit.openshift.io
   resources:
+  - cloudkitvms/finalizers
   - clusterorders/finalizers
   verbs:
   - update
 - apiGroups:
   - cloudkit.openshift.io
   resources:
+  - cloudkitvms/status
   - clusterorders/status
   verbs:
   - get
   - patch
   - update
+- apiGroups:
+  - ""
+  resources:
+  - namespaces
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
 - apiGroups:
   - hypershift.openshift.io
   resources:

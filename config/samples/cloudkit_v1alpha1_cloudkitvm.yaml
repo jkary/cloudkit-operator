@@ -1,0 +1,18 @@
+apiVersion: cloudkit.openshift.io/v1alpha1
+kind: CloudkitVM
+metadata:
+  labels:
+    app.kubernetes.io/name: cloudkit-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: cloudkitvm-sample
+spec:
+  templateID: ocp_virt_vm
+  templateParameters: |
+    {
+      "vm_name": "sample-vm",
+      "vm_cpu_cores": 2,
+      "vm_memory": "2Gi",
+      "vm_disk_size": "25Gi",
+      "vm_image_source": "quay.io/containerdisks/fedora:latest",
+      "vm_os_type": "linux"
+    }

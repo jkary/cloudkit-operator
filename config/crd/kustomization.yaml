@@ -3,6 +3,7 @@
 # It should be run by config/default
 resources:
 - bases/cloudkit.openshift.io_clusterorders.yaml
+- bases/cloudkit.openshift.io_cloudkitvms.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

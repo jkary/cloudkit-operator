@@ -18,6 +18,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"flag"
 	"fmt"
@@ -74,6 +75,8 @@ func main() {
 	var grpcTokenFile string
 	var fulfillmentServerAddress string
 	var minimumRequestInterval string
+	var enableClusterController bool
+	var enableVMController bool
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -115,13 +118,34 @@ func main() {
 		os.Getenv("CLOUDKIT_MINIMUM_REQUEST_INTERVAL"),
 		"Minimum amount of time between calls to the same webook url",
 	)
+	flag.BoolVar(
+		&enableClusterController,
+		"enable-cluster-controller",
+		os.Getenv("CLOUDKIT_ENABLE_CLUSTER_CONTROLLER") == "true",
+		"Enable the ClusterOrder controller",
+	)
+	flag.BoolVar(
+		&enableVMController,
+		"enable-vm-controller",
+		os.Getenv("CLOUDKIT_ENABLE_VM_CONTROLLER") == "true",
+		"Enable the CloudkitVM controller",
+	)
 	opts := zap.Options{
 		Development: true,
 	}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
+	// If neither controller is explicitly enabled, enable cluster controller for backward compatibility
+	if !enableClusterController && !enableVMController {
+		enableClusterController = true
+	}
+
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	if !enableVMController && enableClusterController {
+		setupLog.Info("No controllers explicitly enabled, defaulting to cluster controller for backward compatibility")
+	}
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -200,18 +224,42 @@ func main() {
 			os.Exit(1)
 		}
 		defer grpcConn.Close() //nolint:errcheck
-		if err = (controller.NewFeedbackReconciler(
-			ctrl.Log.WithName("feedback"),
-			mgr.GetClient(),
-			grpcConn,
-			os.Getenv("CLOUDKIT_CLUSTER_ORDER_NAMESPACE"),
-		)).SetupWithManager(mgr); err != nil {
-			setupLog.Error(
-				err,
-				"unable to create feedback controller",
-				"controller", "Feedback",
+
+		// Set up cluster feedback controller if cluster controller is enabled
+		if enableClusterController {
+			if err = (controller.NewFeedbackReconciler(
+				ctrl.Log.WithName("feedback"),
+				mgr.GetClient(),
+				grpcConn,
+				os.Getenv("CLOUDKIT_CLUSTER_ORDER_NAMESPACE"),
+			)).SetupWithManager(mgr); err != nil {
+				setupLog.Error(
+					err,
+					"unable to create feedback controller",
+					"controller", "Feedback",
+				)
+				os.Exit(1)
+			}
+		}
+
+		// Set up VM feedback controller if VM controller is enabled
+		if enableVMController {
+			vmFeedbackController := controller.NewCloudkitVMFeedbackReconciler(
+				ctrl.Log.WithName("vm-feedback"),
+				mgr.GetClient(),
+				grpcConn,
+				os.Getenv("CLOUDKIT_VM_ORDER_NAMESPACE"),
 			)
-			os.Exit(1)
+			if err = vmFeedbackController.SetupWithManager(mgr); err != nil {
+				setupLog.Error(
+					err,
+					"unable to create VM feedback controller",
+					"controller", "VMFeedback",
+				)
+				os.Exit(1)
+			}
+			// Start periodic sync for VM status updates
+			go vmFeedbackController.StartPeriodicSync(context.Background(), 30*time.Second)
 		}
 	} else {
 		setupLog.Info("gRPC connection to fulfillment service is disabled")
@@ -228,16 +276,41 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = (controller.NewClusterOrderReconciler(
-		mgr.GetClient(),
-		mgr.GetScheme(),
-		os.Getenv("CLOUDKIT_CLUSTER_CREATE_WEBHOOK"),
-		os.Getenv("CLOUDKIT_CLUSTER_DELETE_WEBHOOK"),
-		os.Getenv("CLOUDKIT_CLUSTER_ORDER_NAMESPACE"),
-		interval,
-	)).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "ClusterOrder")
-		os.Exit(1)
+	// Set up ClusterOrder controller if enabled
+	if enableClusterController {
+		if err = (controller.NewClusterOrderReconciler(
+			mgr.GetClient(),
+			mgr.GetScheme(),
+			os.Getenv("CLOUDKIT_CLUSTER_CREATE_WEBHOOK"),
+			os.Getenv("CLOUDKIT_CLUSTER_DELETE_WEBHOOK"),
+			os.Getenv("CLOUDKIT_CLUSTER_ORDER_NAMESPACE"),
+			interval,
+		)).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "ClusterOrder")
+			os.Exit(1)
+		}
+		setupLog.Info("ClusterOrder controller enabled")
+	} else {
+		setupLog.Info("ClusterOrder controller disabled")
+	}
+
+	// Set up CloudkitVM controller if enabled
+	if enableVMController {
+		if err = (controller.NewCloudkitVMReconciler(
+			mgr.GetClient(),
+			mgr.GetScheme(),
+			grpcConn,
+			os.Getenv("CLOUDKIT_VM_CREATE_WEBHOOK"),
+			os.Getenv("CLOUDKIT_VM_DELETE_WEBHOOK"),
+			os.Getenv("CLOUDKIT_VM_ORDER_NAMESPACE"),
+			interval,
+		)).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create controller", "controller", "CloudkitVM")
+			os.Exit(1)
+		}
+		setupLog.Info("CloudkitVM controller enabled")
+	} else {
+		setupLog.Info("CloudkitVM controller disabled")
 	}
 
 	// +kubebuilder:scaffold:builder
